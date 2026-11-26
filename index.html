@@ -251,6 +251,17 @@
       .panel { min-height: 520px; }
       .top-actions .optional { display: none; }
     }
+
+    #confettiCanvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 9998;
+      display: none;
+    }
+    #winnerModal { z-index: 9999; }
   </style>
 
   <style id="dark-font-fixes">
@@ -335,7 +346,7 @@
       </div>
       <div class="panel-body" id="entriesPanel">
         <div class="toolbar">
-          <div class="count"><span id="entryCount">30</span> <small>entries</small></div>
+          <div class="count"><span id="entryCount">0</span> <small>entries</small></div>
           <button class="btn" id="shuffleBtn">Shuffle</button>
           <button class="btn" id="sortBtn">Sort</button>
         </div>
@@ -351,6 +362,12 @@
       </div>
     </aside>
   </main>
+
+  <!-- Place spin.mp3 and winner.mp3 beside this index.html file. -->
+  <audio id="spinAudio" src="spin.mp3" preload="auto" loop></audio>
+  <audio id="winnerAudio" src="winner.mp3" preload="auto"></audio>
+
+  <canvas id="confettiCanvas" aria-hidden="true"></canvas>
 
   <div class="modal-backdrop" id="winnerModal">
     <div class="modal">
@@ -383,18 +400,54 @@
     const spinBtn = document.getElementById('spinBtn');
     const colors = ['#ef476f','#ffd166','#06d6a0','#118ab2','#6558d3','#f78c6b','#3a86ff','#8338ec','#ff9f1c','#2ec4b6'];
 
-    const sampleNames = [
-      'Alex','Bianca','Carlo','Diana','Ethan','Fatima','Gabriel','Hannah','Ivan','Julia',
-      'Kevin','Lara','Marco','Nina','Owen','Paula','Quinn','Rafael','Sofia','Theo',
-      'Uma','Victor','Wendy','Xander','Yasmin','Zane','Amir','Bea','Chris','Dana'
-    ];
+    // Start with no entries. Add or paste names in the Entries box.
+    const sampleNames = [];
 
-    let entries = [...sampleNames];
+    let entries = [];
     let results = [];
     let rotation = 0;
     let spinning = false;
     let currentWinner = null;
-    entriesBox.value = entries.join('\n');
+
+    let audioContext = null;
+
+    async function enableAudio() {
+      try {
+        if (!audioContext) {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return false;
+          audioContext = new AudioCtx();
+        }
+        if (audioContext.state === 'suspended') await audioContext.resume();
+        // Play an inaudible buffer while still inside the user gesture.
+        const buffer = audioContext.createBuffer(1, 1, 22050);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start(0);
+        return audioContext.state === 'running';
+      } catch (_) { return false; }
+    }
+
+    function playTick() {
+      const toggle = document.getElementById('soundToggle');
+      if (!toggle || !toggle.checked || !audioContext || audioContext.state !== 'running') return;
+      try {
+        const now = audioContext.currentTime;
+        const osc = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        const filter = audioContext.createBiquadFilter();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(1350, now);
+        osc.frequency.exponentialRampToValueAtTime(480, now + 0.025);
+        filter.type = 'bandpass'; filter.frequency.value = 1800; filter.Q.value = 1.4;
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(0.13, now + 0.002);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.045);
+        osc.connect(filter); filter.connect(gain); gain.connect(audioContext.destination);
+        osc.start(now); osc.stop(now + 0.05);
+      } catch (_) {}
+    }
 
     function syncEntries() {
       entries = entriesBox.value.split('\n').map(x => x.trim()).filter(Boolean);
@@ -469,10 +522,76 @@
 
     function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
+    let suspenseTimer = null;
+    let suspenseStep = 0;
+
+    function startSuspenseMusic() {
+      const toggle = document.getElementById('soundToggle');
+      if (!toggle || !toggle.checked || !audioContext || audioContext.state !== 'running') return;
+      stopSuspenseMusic();
+      suspenseStep = 0;
+      const pattern = [261.63, 329.63, 392.00, 329.63, 293.66, 369.99, 440.00, 369.99];
+      const pulse = () => {
+        if (!spinning || !document.getElementById('soundToggle').checked) { stopSuspenseMusic(); return; }
+        const now = audioContext.currentTime;
+        const root = pattern[suspenseStep % pattern.length];
+        [root, root * 2].forEach((freq, layer) => {
+          const osc = audioContext.createOscillator();
+          const gain = audioContext.createGain();
+          osc.type = layer ? 'triangle' : 'sawtooth';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, now);
+          gain.gain.exponentialRampToValueAtTime(layer ? 0.035 : 0.055, now + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.16);
+          osc.connect(gain); gain.connect(audioContext.destination);
+          osc.start(now); osc.stop(now + 0.18);
+        });
+        suspenseStep++;
+      };
+      pulse();
+      suspenseTimer = setInterval(pulse, 185);
+    }
+
+    function stopSuspenseMusic() {
+      if (suspenseTimer) clearInterval(suspenseTimer);
+      suspenseTimer = null;
+    }
+
+    function startSpinAudio() {
+      const toggle = document.getElementById('soundToggle');
+      if (!toggle || !toggle.checked) return;
+      const a = document.getElementById('spinAudio');
+      if (!a) return;
+      a.pause();
+      a.currentTime = 0;
+      a.volume = 0.75;
+      a.play().catch(() => {});
+    }
+
+    function stopSpinAudio() {
+      const a = document.getElementById('spinAudio');
+      if (!a) return;
+      a.pause();
+      a.currentTime = 0;
+    }
+
+    function playWinnerAudio() {
+      const toggle = document.getElementById('soundToggle');
+      if (!toggle || !toggle.checked) return;
+      const a = document.getElementById('winnerAudio');
+      if (!a) return;
+      a.pause();
+      a.currentTime = 0;
+      a.volume = 0.95;
+      a.play().catch(() => { playWinnerCelebration(); });
+    }
+
     function spin(forcedName = null) {
       if (spinning || entries.length < 2) return;
+      enableAudio();
       spinning = true;
       spinBtn.disabled = true;
+      startSpinAudio();
 
       let winnerIndex = Math.floor(Math.random() * entries.length);
       if (forcedName) {
@@ -480,6 +599,7 @@
         if (wanted >= 0) winnerIndex = wanted;
       }
       const arc = Math.PI * 2 / entries.length;
+      let lastTickIndex = Math.floor(rotation / arc);
       const currentNorm = ((rotation % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
       // Visibly vary the final pointer position within the winning slice.
       const side = Math.random() < 0.5 ? -1 : 1;
@@ -496,17 +616,21 @@
       function animate(now) {
         const t = Math.min(1, (now - started) / durationMs);
         rotation = startRotation + (finalRotation - startRotation) * easeOutCubic(t);
+        const tickIndex = Math.floor(rotation / arc);
+        if (tickIndex !== lastTickIndex) { playTick(); lastTickIndex = tickIndex; }
         drawWheel();
         if (t < 1) requestAnimationFrame(animate);
         else {
           rotation = finalRotation;
           spinning = false;
+          stopSpinAudio();
           spinBtn.disabled = false;
           currentWinner = entries[winnerIndex];
           results.unshift({ name: currentWinner, time: new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) });
           renderResults();
           showWinner(currentWinner);
-          if (document.getElementById('soundToggle').checked) playWinTone();
+          playWinnerAudio();
+          launchConfetti();
         }
       }
       requestAnimationFrame(animate);
@@ -529,6 +653,102 @@
       } catch (_) {}
     }
 
+    function playWinnerCelebration() {
+      const toggle = document.getElementById('soundToggle');
+      if (!toggle || !toggle.checked || !audioContext) return;
+      try {
+        const now = audioContext.currentTime + 0.03;
+        const melody = [
+          [523.25,0.00,.16],[659.25,.10,.16],[783.99,.20,.18],
+          [1046.50,.31,.30],[1318.51,.48,.24],[1567.98,.63,.55]
+        ];
+        melody.forEach(([freq,off,len], i) => {
+          const osc=audioContext.createOscillator(), gain=audioContext.createGain();
+          osc.type=i<3?'square':'triangle'; osc.frequency.value=freq;
+          const st=now+off; gain.gain.setValueAtTime(.0001,st);
+          gain.gain.exponentialRampToValueAtTime(i<3?.10:.18,st+.012);
+          gain.gain.exponentialRampToValueAtTime(.0001,st+len);
+          osc.connect(gain); gain.connect(audioContext.destination); osc.start(st); osc.stop(st+len+.03);
+        });
+        // Big major chord hit for the reveal.
+        [523.25,659.25,783.99,1046.50].forEach((freq,i)=>{
+          const osc=audioContext.createOscillator(), gain=audioContext.createGain();
+          osc.type='sine'; osc.frequency.value=freq; const st=now+.68;
+          gain.gain.setValueAtTime(.0001,st); gain.gain.exponentialRampToValueAtTime(.11,st+.02);
+          gain.gain.exponentialRampToValueAtTime(.0001,st+.9);
+          osc.connect(gain); gain.connect(audioContext.destination); osc.start(st); osc.stop(st+.95);
+        });
+      } catch (_) {}
+    }
+
+    let confettiAnimationId = null;
+
+    function stopConfetti() {
+      if (confettiAnimationId) {
+        cancelAnimationFrame(confettiAnimationId);
+        confettiAnimationId = null;
+      }
+      const c = document.getElementById('confettiCanvas');
+      if (c) {
+        const cctx = c.getContext('2d');
+        cctx.clearRect(0, 0, c.width, c.height);
+        c.style.display = 'none';
+      }
+    }
+
+    function launchConfetti() {
+      const toggle = document.getElementById('confettiToggle');
+      if (!toggle || !toggle.checked) return;
+      const c = document.getElementById('confettiCanvas');
+      const cctx = c.getContext('2d');
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      c.width = Math.floor(window.innerWidth * dpr);
+      c.height = Math.floor(window.innerHeight * dpr);
+      c.style.display = 'block';
+      cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const palette = ['#ef476f','#ffd166','#06d6a0','#118ab2','#6558d3','#f78c6b','#3a86ff','#ffffff'];
+      const pieces = Array.from({length: 260}, () => ({
+        x: Math.random() * innerWidth,
+        y: -20 - Math.random() * innerHeight * 0.9,
+        w: 5 + Math.random() * 8,
+        h: 8 + Math.random() * 12,
+        color: palette[Math.floor(Math.random() * palette.length)],
+        speed: 2.2 + Math.random() * 5.2,
+        drift: -1.8 + Math.random() * 3.6,
+        angle: Math.random() * Math.PI * 2,
+        spin: -0.15 + Math.random() * 0.3
+      }));
+      const started = performance.now();
+      const duration = 5500;
+
+      if (confettiAnimationId) cancelAnimationFrame(confettiAnimationId);
+      function frame(now) {
+        cctx.clearRect(0, 0, innerWidth, innerHeight);
+        pieces.forEach(p => {
+          p.y += p.speed;
+          p.x += p.drift;
+          p.angle += p.spin;
+          if (p.y > innerHeight + 30) p.y = -30;
+          if (p.x < -30) p.x = innerWidth + 30;
+          if (p.x > innerWidth + 30) p.x = -30;
+          cctx.save();
+          cctx.translate(p.x, p.y);
+          cctx.rotate(p.angle);
+          cctx.fillStyle = p.color;
+          cctx.fillRect(-p.w/2, -p.h/2, p.w, p.h);
+          cctx.restore();
+        });
+        if (now - started < duration) confettiAnimationId = requestAnimationFrame(frame);
+        else {
+          cctx.clearRect(0, 0, innerWidth, innerHeight);
+          c.style.display = 'none';
+          confettiAnimationId = null;
+        }
+      }
+      confettiAnimationId = requestAnimationFrame(frame);
+    }
+
     function showWinner(name) {
       document.getElementById('winnerName').textContent = name;
       document.getElementById('winnerModal').style.display = 'flex';
@@ -545,14 +765,15 @@
     }
 
     entriesBox.addEventListener('input', syncEntries);
-    spinBtn.addEventListener('click', () => spin());
-    canvas.addEventListener('click', () => spin());
+    spinBtn.addEventListener('click', async () => { await enableAudio(); spin(); });
+    canvas.addEventListener('click', async () => { await enableAudio(); spin(); });
     // Controlled fun mode: first right-click per page load targets Peter if Peter is in the entries.
     // Later right-clicks are ordinary random spins. Refresh/reopen resets the one-use flag.
     wmaDangalanRightClickUsed = false;
     [spinBtn, canvas].forEach(el => el.addEventListener('contextmenu', e => {
       e.preventDefault();
       if (spinning) return;
+      enableAudio();
       const hasWMADangalan = entries.some(x => x.trim().toLowerCase() === 'wma-dangalan');
       if (!wmaDangalanRightClickUsed && hasWMADangalan) {
         wmaDangalanRightClickUsed = true;
@@ -562,7 +783,7 @@
       }
     }));
 
-    document.addEventListener('keydown', e => { if (e.ctrlKey && e.key === 'Enter') spin(); });
+    document.addEventListener('keydown', async e => { if (e.ctrlKey && e.key === 'Enter') { await enableAudio(); spin(); } });
 
     document.getElementById('shuffleBtn').onclick = () => {
       for (let i = entries.length - 1; i > 0; i--) {
@@ -581,10 +802,18 @@
       if (i >= 0) entries.splice(i, 1);
       entriesBox.value = entries.join('\n');
       document.getElementById('winnerModal').style.display = 'none';
+      stopConfetti();
+      const winnerAudio = document.getElementById('winnerAudio');
+      if (winnerAudio) { winnerAudio.pause(); winnerAudio.currentTime = 0; }
       syncEntries();
     };
 
-    document.getElementById('closeWinnerBtn').onclick = () => document.getElementById('winnerModal').style.display = 'none';
+    document.getElementById('closeWinnerBtn').onclick = () => {
+      document.getElementById('winnerModal').style.display = 'none';
+      stopConfetti();
+      const winnerAudio = document.getElementById('winnerAudio');
+      if (winnerAudio) { winnerAudio.pause(); winnerAudio.currentTime = 0; }
+    };
     document.getElementById('clearResultsBtn').onclick = () => { results = []; renderResults(); };
     document.getElementById('newBtn').onclick = () => {
       if (confirm('Clear all entries and results?')) {
